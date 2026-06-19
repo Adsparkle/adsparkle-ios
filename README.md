@@ -21,13 +21,13 @@ Client-side conversion-tracking SDK for the [AdSparkle](https://adsparkle.co) af
 https://github.com/Adsparkle/adsparkle-ios.git
 ```
 
-Choose version `0.1.0` (or **Up to Next Major** from `0.1.0`).
+Choose version `0.1.1` (or **Up to Next Major** from `0.1.1`).
 
 **Package.swift:**
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.0")
+    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.1")
 ],
 targets: [
     .target(name: "YourApp", dependencies: ["AdSparkle"])
@@ -37,7 +37,7 @@ targets: [
 ### CocoaPods
 
 ```ruby
-pod 'AdSparkle', '~> 0.1.0'
+pod 'AdSparkle', '~> 0.1.1'
 ```
 
 Then run `pod install`.
@@ -263,11 +263,11 @@ Logs are emitted via `os.log` (visible in Console.app and Xcode console). Errors
 Tag the commit that should be released:
 
 ```bash
-git tag 0.1.0
-git push origin 0.1.0
+git tag 0.1.1
+git push origin 0.1.1
 ```
 
-Consumers pinned to `from: "0.1.0"` or `"~> 0.1.0"` will pick up the release.
+Consumers pinned to `from: "0.1.1"` or `"~> 0.1.1"` will pick up the release.
 
 ### CocoaPods
 
