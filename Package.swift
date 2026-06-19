@@ -1,12 +1,10 @@
-// swift-tools-version:5.9
+// swift-tools-version:5.7
 import PackageDescription
 
 let package = Package(
     name: "AdSparkle",
     platforms: [
-        .iOS(.v13),
-        .macOS(.v11),
-        .tvOS(.v13)
+        .iOS(.v13)
     ],
     products: [
         .library(
@@ -17,16 +15,7 @@ let package = Package(
     targets: [
         .target(
             name: "AdSparkle",
-            path: "Sources/AdSparkle",
-            swiftSettings: [
-                .enableUpcomingFeature("BareSlashRegexLiterals")
-            ]
-        ),
-        .testTarget(
-            name: "AdSparkleTests",
-            dependencies: ["AdSparkle"],
-            path: "Tests/AdSparkleTests"
+            path: "Sources/AdSparkle"
         )
-    ],
-    swiftLanguageVersions: [.v5]
+    ]
 )

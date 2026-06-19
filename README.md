@@ -1,77 +1,102 @@
 # AdSparkle iOS SDK
 
-Client-side conversion-tracking SDK for the [AdSparkle](https://adsparkle.co) affiliate platform. Zero third-party dependencies — pure Foundation + Network framework.
+`AdSparkle` is the official iOS client SDK for the **viralif / adbird** affiliate
+attribution tracking platform. It lets your mobile app capture affiliate
+attribution from deep links and report conversion events (install, sign up,
+purchase, etc.) to the tracking backend.
 
-- Captures `click_id` from deep links / Universal Links
-- Sends conversion events to the AdSparkle postback endpoint
-- Persists a click chain (max 50, 7-day TTL attribution window) across launches
-- Offline retry queue with automatic flush on network regain (NWPathMonitor)
-- Anonymous user ID generation and persistence
-- iOS 13+ / macOS 11+ / tvOS 13+, Swift 5.9, Swift Package Manager + CocoaPods
+- iOS 13+
+- Swift 5.7+
+- Swift Package Manager **and** CocoaPods
+- Objective-C interoperable
+
+> **Security note:** AdSparkle only uses your **publishable company key** (the
+> `co_…` key). This key is **not a secret** and is safe to ship in your app
+> binary. The SDK **never** uses or transmits any HMAC / secret key.
 
 ---
 
 ## Installation
 
-### Swift Package Manager (recommended)
+### Swift Package Manager
 
-**Xcode UI:** File > Add Package Dependencies, enter:
+In Xcode: **File → Add Packages…** and enter the repository URL:
 
 ```
 https://github.com/Adsparkle/adsparkle-ios.git
 ```
 
-Choose version `0.1.1` (or **Up to Next Major** from `0.1.1`).
-
-**Package.swift:**
+Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.1")
+    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.2")
 ],
 targets: [
-    .target(name: "YourApp", dependencies: ["AdSparkle"])
+    .target(
+        name: "YourApp",
+        dependencies: [
+            .product(name: "AdSparkle", package: "adsparkle-ios")
+        ]
+    )
 ]
 ```
 
 ### CocoaPods
 
+Add to your `Podfile`:
+
 ```ruby
-pod 'AdSparkle', '~> 0.1.1'
+pod 'AdSparkle', '~> 0.1.2'
 ```
 
-Then run `pod install`.
+Then run:
+
+```sh
+pod install
+```
 
 ---
 
-## Quick Start
-
-### 1. Initialise (UIKit AppDelegate)
+## Quick start
 
 ```swift
-// AppDelegate.swift
 import AdSparkle
 
-@UIApplicationMain
-class AppDelegate: UIResponder, UIApplicationDelegate {
+// 1. Configure once at launch.
+AdSparkle.shared.configure(
+    companyKey: "co_your_publishable_key",
+    baseUrl: "https://api.adsparkle.co",   // optional, this is the default
+    debug: true                          // optional, prints diagnostics
+)
 
-    func application(
-        _ application: UIApplication,
-        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-    ) -> Bool {
-        // Optional: enable verbose debug output during development
-        AdSparkle.debugLogging = true
+// 2. Identify the user.
+AdSparkle.shared.setUserId("user-123")
 
-        AdSparkle.initialize(companyKey: "YOUR_COMPANY_KEY")
-        // or with a custom endpoint:
-        // AdSparkle.initialize(companyKey: "YOUR_COMPANY_KEY", endpointBase: "https://api.yourhost.com")
+// 3. Capture attribution from a deep link (see below).
 
-        return true
-    }
-}
+// 4. Track events.
+AdSparkle.shared.trackInstall()
+AdSparkle.shared.trackPurchase(
+    AdSparkleEvent(transactionId: "txn_987", amount: 9.99, currency: "USD")
+)
 ```
 
-### 1b. Initialise (SwiftUI App)
+---
+
+## Capturing the `click_id` from deep links
+
+Attribution is carried in a `click_id` query parameter:
+
+```
+yourapp://open?click_id=<uuid>
+https://yourbrand.link/path?click_id=<uuid>
+```
+
+Pass every incoming URL to `handleDeepLink(_:)`. URLs without a `click_id` are
+ignored safely.
+
+### SwiftUI
 
 ```swift
 import SwiftUI
@@ -79,224 +104,169 @@ import AdSparkle
 
 @main
 struct MyApp: App {
-    init() {
-        AdSparkle.initialize(companyKey: "YOUR_COMPANY_KEY")
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .onOpenURL { url in
+                    AdSparkle.shared.handleDeepLink(url)
+                }
+        }
     }
-    var body: some Scene { WindowGroup { ContentView() } }
 }
 ```
 
----
-
-### 2. Capture Clicks
-
-#### UIKit — AppDelegate deep-link handler
+### UIKit — SceneDelegate (custom URL scheme)
 
 ```swift
-func application(
-    _ app: UIApplication,
-    open url: URL,
-    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
-) -> Bool {
-    AdSparkle.trackClick(url: url)
+func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    if let url = URLContexts.first?.url {
+        AdSparkle.shared.handleDeepLink(url)
+    }
+}
+
+// Cold-start launch via URL:
+func scene(_ scene: UIScene,
+           willConnectTo session: UISceneSession,
+           options connectionOptions: UIScene.ConnectionOptions) {
+    if let url = connectionOptions.urlContexts.first?.url {
+        AdSparkle.shared.handleDeepLink(url)
+    }
+}
+```
+
+### UIKit — SceneDelegate (Universal Links)
+
+```swift
+func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+    if userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+       let url = userActivity.webpageURL {
+        AdSparkle.shared.handleDeepLink(url)
+    }
+}
+```
+
+### UIKit — AppDelegate (no scenes)
+
+```swift
+func application(_ app: UIApplication,
+                 open url: URL,
+                 options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+    AdSparkle.shared.handleDeepLink(url)
+    return true
+}
+
+func application(_ application: UIApplication,
+                 continue userActivity: NSUserActivity,
+                 restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
+    if let url = userActivity.webpageURL {
+        AdSparkle.shared.handleDeepLink(url)
+    }
     return true
 }
 ```
 
-#### SceneDelegate — Universal Links / deep links
+You can also set the click id manually if you obtain it some other way:
 
 ```swift
-func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
-    URLContexts.forEach { AdSparkle.trackClick(url: $0.url) }
-}
-
-func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
-    if let url = userActivity.webpageURL {
-        AdSparkle.trackClick(url: url)
-    }
-}
+AdSparkle.shared.setClickId("a1b2c3-...")
+let current = AdSparkle.shared.clickId   // Optional<String>
 ```
 
-#### SwiftUI — `.onOpenURL` modifier
-
-```swift
-ContentView()
-    .onOpenURL { url in
-        AdSparkle.trackClick(url: url)
-    }
-```
-
-The SDK reads the `click_id` query parameter, validates it as a UUID v4, and adds it to the local attribution chain.
+The SDK keeps an attribution **chain** of up to the 10 most recent, unique click
+ids and sends them as `click_ids` alongside the latest `click_id`.
 
 ---
 
-### 3. Track Conversions
+## Tracking events
 
-All calls are asynchronous and off the main thread. The optional `completion` block is also delivered on a background thread — dispatch to main if you need to update the UI.
-
-#### Purchase
+The generic entry point:
 
 ```swift
-AdSparkle.trackConversion(
-    type: .purchase,              // AdSparkleConversionType
-    transactionId: "txn_98765",
-    amount: 49.99,
+AdSparkle.shared.track("purchase", event: AdSparkleEvent(amount: 19.99, currency: "USD"))
+```
+
+Plus convenience methods for every supported type:
+
+```swift
+AdSparkle.shared.trackInstall()
+AdSparkle.shared.trackSignUp()
+AdSparkle.shared.trackLogin()
+AdSparkle.shared.trackDownload()
+AdSparkle.shared.trackPurchase(AdSparkleEvent(transactionId: "txn_1", amount: 4.99, currency: "USD"))
+AdSparkle.shared.trackSubscription(AdSparkleEvent(amount: 9.99, currency: "USD"))
+AdSparkle.shared.trackRefund(AdSparkleEvent(transactionId: "txn_1"))
+```
+
+`AdSparkleEvent` fields are all optional:
+
+```swift
+AdSparkleEvent(
+    transactionId: "txn_1",
+    amount: 9.99,
     currency: "USD",
-    productIds: ["sku_001", "sku_002"],
-    completion: { result in
-        switch result {
-        case .success(let queued):
-            print(queued ? "Queued for retry" : "Sent successfully")
-        case .noClickId:
-            print("Organic visit — no click_id")
-        case .networkError(let err):
-            print("Network error: \(err)")
-        case .serverError(let code):
-            print("Server error: \(code)")
-        case .unknownEventType(let raw):
-            print("Unknown type: \(raw)")
-        case .notInitialised:
-            print("SDK not initialised")
-        }
-    }
+    productIds: ["sku_a", "sku_b"],
+    customParams: ["campaign": "summer"]
 )
 ```
 
-#### Sign-up
+> If no `click_id` or no `user_id` is available when you call a `track` method,
+> the event is **silently skipped** (a debug message is printed when `debug` is
+> enabled). No error is thrown.
 
-```swift
-AdSparkle.setUserId("user_42")          // call after successful sign-in/registration
-AdSparkle.trackConversion(type: .signUp)
-```
+### Supported event types
 
-#### Login
+| Event type     | Constant                          | Typical fields                          |
+| -------------- | --------------------------------- | --------------------------------------- |
+| `install`      | `AdSparkleEventType.install`      | —                                       |
+| `sign_up`      | `AdSparkleEventType.signUp`       | —                                       |
+| `login`        | `AdSparkleEventType.login`        | —                                       |
+| `download`     | `AdSparkleEventType.download`     | —                                       |
+| `purchase`     | `AdSparkleEventType.purchase`     | `transactionId`, `amount`, `currency`   |
+| `subscription` | `AdSparkleEventType.subscription` | `transactionId`, `amount`, `currency`   |
+| `refund`       | `AdSparkleEventType.refund`       | `transactionId`                         |
 
-```swift
-AdSparkle.setUserId("user_42")
-AdSparkle.trackConversion(type: .login)
-```
-
-#### Subscription
-
-```swift
-AdSparkle.trackConversion(
-    type: .subscription,
-    transactionId: "sub_annual_001",
-    amount: 99.00,
-    currency: "EUR"
-)
-```
-
-#### Refund / Chargeback
-
-```swift
-AdSparkle.trackConversion(
-    type: .refund,
-    transactionId: "txn_98765",
-    amount: 49.99,
-    currency: "USD"
-)
-```
-
-#### Using raw strings (and aliases)
-
-```swift
-// These aliases are resolved to the canonical type automatically:
-AdSparkle.trackConversion(type: "order")      // → purchase
-AdSparkle.trackConversion(type: "signup")     // → sign_up
-AdSparkle.trackConversion(type: "subscribe")  // → subscription
-AdSparkle.trackConversion(type: "chargeback") // → refund
-```
-
-#### Custom metadata
-
-```swift
-AdSparkle.trackConversion(
-    type: .purchase,
-    transactionId: "txn_99",
-    amount: 19.99,
-    currency: "GBP",
-    customParams: ["plan": "pro", "source": "onboarding"]
-)
-```
+The event type set is **fixed**; passing any other string is ignored.
 
 ---
 
-### 4. Offline Retry
+## Delivery & reliability
 
-The SDK automatically retries failed events when connectivity is restored. You can also trigger a manual flush:
+- Events are sent asynchronously on a background queue — the main thread is
+  never blocked.
+- On `5xx` / network errors the SDK retries up to **3 times** with exponential
+  backoff (1s, 2s, 4s).
+- If all attempts fail, the event is persisted to a **pending queue** and
+  retried on the next `track(...)` or `configure(...)` call.
+- A `200` response means the event was accepted (processing is async on the
+  backend).
 
-```swift
-AdSparkle.flushQueue()
-```
-
----
-
-## Supported Event Types
-
-| Enum case | Raw value | Accepted aliases |
-|---|---|---|
-| `.install` | `install` | — |
-| `.signUp` | `sign_up` | `signup`, `register`, `registration` |
-| `.login` | `login` | — |
-| `.download` | `download` | — |
-| `.purchase` | `purchase` | `order`, `sale` |
-| `.subscription` | `subscription` | `subscribe` |
-| `.refund` | `refund` | `chargeback` |
+State (company key, base URL, user id, click ids, pending queue) is persisted in
+`UserDefaults` under the `co.adsparkle.sdk` suite, so attribution survives app
+restarts.
 
 ---
 
-## Debug Logging
+## Objective-C interop
 
-```swift
-AdSparkle.debugLogging = true   // set BEFORE initialize()
+The public API is exposed to Objective-C:
+
+```objc
+@import AdSparkle;
+
+[AdSparkle.shared configureWithCompanyKey:@"co_xxx"
+                                  baseUrl:@"https://api.adsparkle.co"
+                                    debug:YES];
+[AdSparkle.shared setUserId:@"user-123"];
+[AdSparkle.shared handleDeepLink:url];
+
+AdSparkleEvent *event = [[AdSparkleEvent alloc] init];
+event.amount = @9.99;
+event.currency = @"USD";
+[AdSparkle.shared trackPurchase:event];
 ```
-
-Logs are emitted via `os.log` (visible in Console.app and Xcode console). Errors are always logged regardless of this flag.
-
----
-
-## Release Checklist
-
-### Swift Package Manager
-
-Tag the commit that should be released:
-
-```bash
-git tag 0.1.1
-git push origin 0.1.1
-```
-
-Consumers pinned to `from: "0.1.1"` or `"~> 0.1.1"` will pick up the release.
-
-### CocoaPods
-
-Ensure your `AdSparkle.podspec` version matches the git tag, then push to the trunk:
-
-```bash
-pod trunk push AdSparkle.podspec --allow-warnings
-```
-
-If you haven't registered yet:
-
-```bash
-pod trunk register adem@viralif.co 'ViralifAdem'
-```
-
----
-
-## Requirements
-
-| | Minimum |
-|---|---|
-| iOS | 13.0 |
-| macOS | 11.0 |
-| tvOS | 13.0 |
-| Swift | 5.9 |
-| Xcode | 15.0 |
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT.

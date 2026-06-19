@@ -1,22 +1,17 @@
-# Xcode / Swift
-.DS_Store
-build/
-DerivedData/
-*.xcuserstate
-xcuserdata/
-*.xcscmblueprint
-*.xccheckout
 # Swift Package Manager
 .build/
 .swiftpm/
-Packages/
 Package.resolved
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+*.xcuserstate
+
 # CocoaPods
 Pods/
-# Carthage
-Carthage/Build/
-# Fastlane
-fastlane/report.xml
-fastlane/Preview.html
-fastlane/screenshots/**/*.png
-fastlane/test_output
+
+# macOS
+.DS_Store
