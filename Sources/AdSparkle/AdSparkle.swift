@@ -16,7 +16,7 @@ public enum AdSparkleEventType {
     ]
 }
 
-/// AdSparkle is the iOS client SDK for the viralif/adbird affiliate attribution
+/// AdSparkle is the iOS client SDK for the AdSparkle affiliate attribution
 /// tracking platform.
 ///
 /// Usage:

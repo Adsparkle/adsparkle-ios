@@ -1,6 +1,6 @@
 # AdSparkle iOS SDK
 
-`AdSparkle` is the official iOS client SDK for the **viralif / adbird** affiliate
+`AdSparkle` is the official iOS client SDK for the **AdSparkle** affiliate
 attribution tracking platform. It lets your mobile app capture affiliate
 attribution from deep links and report conversion events (install, sign up,
 purchase, etc.) to the tracking backend.
