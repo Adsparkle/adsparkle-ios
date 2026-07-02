@@ -30,7 +30,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.2")
+    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.3")
 ],
 targets: [
     .target(
@@ -47,7 +47,7 @@ targets: [
 Add to your `Podfile`:
 
 ```ruby
-pod 'AdSparkle', '~> 0.1.2'
+pod 'AdSparkle', '~> 0.1.3'
 ```
 
 Then run:
@@ -225,7 +225,22 @@ AdSparkleEvent(
 | `subscription` | `AdSparkleEventType.subscription` | `transactionId`, `amount`, `currency`   |
 | `refund`       | `AdSparkleEventType.refund`       | `transactionId`                         |
 
-The event type set is **fixed**; passing any other string is ignored.
+These 7 constants are a **convenience** — they are not the only accepted
+values. You can also pass a company **custom-event `shortId`** (e.g. `"YE2YFSQ"`)
+directly as the `event_type`:
+
+```swift
+AdSparkle.shared.track("YE2YFSQ", event: AdSparkleEvent(
+    amount: 9.99,
+    currency: "USD",
+    productIds: ["sku_a"],
+    customParams: ["campaign": "summer"]
+))
+```
+
+Any `event_type` matching the format `^[A-Za-z0-9_]{1,64}$` is accepted; anything
+else is ignored. `product_ids` and `custom_params` are supported for every event
+type, built-in or custom.
 
 ---
 

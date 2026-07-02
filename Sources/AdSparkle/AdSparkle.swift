@@ -1,6 +1,7 @@
 import Foundation
 
-/// Supported, fixed event types. The backend only accepts these strings.
+/// Built-in event types, provided as a convenience. A company custom-event
+/// shortId can also be passed to `track` as the event_type string.
 public enum AdSparkleEventType {
     public static let install = "install"
     public static let signUp = "sign_up"
@@ -175,8 +176,10 @@ public final class AdSparkle: NSObject {
     /// so conversions are never silently dropped — parity with `adsparkle.js`.
     @objc public func track(_ eventType: String, event: AdSparkleEvent = AdSparkleEvent()) {
         stateQueue.async {
-            guard AdSparkleEventType.all.contains(eventType) else {
-                self.log("Ignoring unknown event_type '\(eventType)'.")
+            // Accept the 7 built-in types or any custom-event shortId. The
+            // backend accepts /^[a-zA-Z0-9_]+$/ (1-64 chars); mirror it here.
+            guard eventType.range(of: "^[A-Za-z0-9_]{1,64}$", options: .regularExpression) != nil else {
+                self.log("Ignoring invalid event_type: \(eventType)")
                 return
             }
             guard let companyKey = self._companyKey, !companyKey.isEmpty else {
