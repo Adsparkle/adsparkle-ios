@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Fingerprint/cihaz sinyalleri attribution icin toplaniyor => tracking. -->
+    <key>NSPrivacyTracking</key>
+    <true/>
+
+    <!-- Tracking verisi bu domain'e gonderilir (postback + /match). -->
+    <!-- DIKKAT: Bir domain tracking-domain olarak beyan edilince, kullanici ATT
+         iznini vermeden bu domain'e agdan yapilan istekler iOS tarafindan BLOKE
+         edilir. SDK cagrilari (postback, /match) api.adsparkle.co'ya gittigi icin
+         ATT olmadan calismaz. Urun karari: ATT prompt'u eklenecek mi, yoksa bu
+         domain tracking-domain olarak SAYILMAYACAK mi (attribution "tracking"
+         degil "app functionality" olarak konumlandirilirsa). Bkz. rapor. -->
+    <key>NSPrivacyTrackingDomains</key>
+    <array>
+        <string>api.adsparkle.co</string>
+    </array>
+
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array>
+        <!-- DeviceID: IDFV + /match icin cihaz fingerprint sinyalleri (Adim 3'te
+             eklenir). Attribution/eslesme icin kullanilir. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeDeviceID</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+            </array>
+        </dict>
+        <!-- ProductInteraction: install/sign_up/login/download vb. conversion event'leri. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeProductInteraction</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+            </array>
+        </dict>
+        <!-- PurchaseHistory: StoreKit purchase/subscription event'leri (AdSparkle+StoreKit). -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypePurchaseHistory</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- Required-reason API: Storage.swift SDK durumunu UserDefaults suite'inde
+         saklar. (deviceModel/osVersion/timezone/ekran/scale APPLE'in required-reason
+         API listesinde DEGILDIR — onlar icin beyan gerekmez; yalnizca UserDefaults
+         required-reason API'dir.) CA92.1 = yalnizca uygulamanin kendisine erisilebilir
+         bilgiye erisim. -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
