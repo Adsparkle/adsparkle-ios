@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'AdSparkle'
-  s.version          = '0.1.3'
+  s.version          = '0.1.4'
   s.summary          = 'iOS client SDK for the AdSparkle affiliate attribution tracking platform.'
   s.description       = <<-DESC
 AdSparkle is the official iOS client SDK for the AdSparkle tracking platform.
@@ -18,4 +18,10 @@ and never any HMAC/secret.
   s.swift_versions   = ['5.7']
 
   s.source_files     = 'Sources/AdSparkle/**/*.swift'
+
+  # App Store zorunlu Privacy Manifest — CocoaPods'ta resource_bundle icinde
+  # tasinmali (aksi halde .xcprivacy son app bundle'ina girmez).
+  s.resource_bundles = {
+    'AdSparkle' => ['Sources/AdSparkle/PrivacyInfo.xcprivacy']
+  }
 end

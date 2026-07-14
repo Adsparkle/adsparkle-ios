@@ -16,6 +16,15 @@ public enum AdSparkleEventType {
     ]
 }
 
+/// ADIM 4: SDK çalışma ortamı. `.sandbox` → tüm giden isteklere (`postback`,
+/// `register-click`, `/match`) `test: true` eklenir; backend ClickEvent/
+/// InstallFingerprint YAZMAZ, postback yalnızca şekil-doğrulanır (ledger etkilenmez).
+/// Varsayılan `.production`. Int-backed → Objective-C uyumlu.
+@objc public enum AdSparkleEnvironment: Int {
+    case production = 0
+    case sandbox = 1
+}
+
 /// AdSparkle is the iOS client SDK for the AdSparkle affiliate attribution
 /// tracking platform.
 ///
@@ -56,6 +65,16 @@ public final class AdSparkle: NSObject {
     private var _userId: String?
     private var _clickId: String?
     private var _debug: Bool = false
+    /// ADIM 4: sandbox modu mu? true ise tüm giden body'lere `test: true` eklenir.
+    private var _isSandbox: Bool = false
+
+    /// ADIM 5: Universal Link kok domain'i (<slug>.go.adsparkle.co). handleDeepLink
+    /// yalnizca bu suffix'li URL'lerde register-click cagirir; merchant'in kendi
+    /// deep-link'lerinde (nudestudio.com/...) DEGIL. Varsayilan prod domaini;
+    /// `configure(linkDomainSuffix:)` ile override edilebilir (test/prod farkli link
+    /// domaini kullanabilir — backend LINK_DOMAIN_SUFFIX env'iyle esler). stateQueue
+    /// ile korunur: configure yazar, handleDeepLink `sync` okur (race yok).
+    private var linkDomainSuffix = ".go.adsparkle.co"
 
     private var client: PostbackClient
 
@@ -67,6 +86,7 @@ public final class AdSparkle: NSObject {
         if let savedBase = storage.baseUrl { _baseUrl = savedBase }
         _userId = storage.userId
         _clickId = storage.clickId
+        _isSandbox = storage.isSandbox
     }
 
     // MARK: - Configuration
@@ -74,18 +94,46 @@ public final class AdSparkle: NSObject {
     /// Configures the SDK. Call once at app launch (e.g. in `application(_:didFinishLaunchingWithOptions:)`).
     ///
     /// Triggers a flush of any events that previously failed to send.
-    @objc public func configure(companyKey: String, baseUrl: String = "https://api.adsparkle.co", debug: Bool = false) {
+    @objc public func configure(companyKey: String, baseUrl: String = "https://api.adsparkle.co", environment: AdSparkleEnvironment = .production, debug: Bool = false, linkDomainSuffix: String = ".go.adsparkle.co") {
         stateQueue.async {
             self._companyKey = companyKey
             self._baseUrl = baseUrl
             self._debug = debug
+            self._isSandbox = (environment == .sandbox)
+            // ADIM 5: link domain suffix (test/prod farkli olabilir). Bas nokta + lowercase
+            // normalize — host karsilastirmasi lowercase host uzerinde `.suffix` ile yapilir.
+            let normalizedSuffix = linkDomainSuffix.lowercased()
+            self.linkDomainSuffix = normalizedSuffix.hasPrefix(".") ? normalizedSuffix : "." + normalizedSuffix
             self.client = PostbackClient(debug: debug)
 
             self.storage.companyKey = companyKey
             self.storage.baseUrl = baseUrl
+            self.storage.isSandbox = self._isSandbox
 
-            self.log("Configured. baseUrl=\(baseUrl)")
+            self.log("Configured. baseUrl=\(baseUrl) env=\(environment == .sandbox ? "sandbox" : "production")")
             self.flushPendingLocked()
+
+            // #Adim3: iOS deferred attribution. click_id YOKSA (deep-link gelmedi →
+            // kullanici App Store'dan kurmus olabilir) BIR KEZ /match ile son 60 dk
+            // icindeki iOS click'ine olasilik-tabanli eslesmeyi dene. Basarida
+            // setClickId → bekleyen deferred olaylar gonderilir (AUTO-FIRE YOK).
+            // Android'in aksine iOS'ta InstallReferrer yok; /match tek deferred yol.
+            let chain = self.currentClickChainLocked()
+            if chain.last == nil && self.storage.pendingRegisterClick != nil {
+                // ADIM 5 (E3): bekleyen register-click varsa (deep-link deterministic)
+                // /match'ten ONCE dene — deterministic olasilik-tabanliya oncelikli.
+                self.attemptRegisterClickLocked()
+            } else if chain.last == nil && !self.storage.matchChecked {
+                self.storage.matchChecked = true
+                let baseUrl = self._baseUrl
+                let deviceId = self.storage.persistentDeviceId()
+                let matchClient = MatchClient(debug: self._debug)
+                matchClient.resolve(baseUrl: baseUrl, deviceId: deviceId, test: self._isSandbox) { [weak self] clickId in
+                    guard let self = self, let clickId = clickId else { return }
+                    // setClickId → flushDeferredLocked (bekleyen olaylar) + chain guncelle.
+                    self.setClickId(clickId)
+                }
+            }
         }
     }
 
@@ -112,11 +160,59 @@ public final class AdSparkle: NSObject {
     ///
     /// Safe to call for any incoming URL; URLs without a `click_id` are ignored.
     @objc public func handleDeepLink(_ url: URL) {
-        guard let extracted = DeepLink.clickId(from: url) else {
+        if let extracted = DeepLink.clickId(from: url) {
+            setClickId(extracted)
+            return
+        }
+        // ADIM 5 (E1): click_id yok VE URL bizim link domain'imizde (<slug>.go.adsparkle.co)
+        // → register-click (app YUKLU acildi, sunucuya ugramadi). Merchant deep-link'inde CAGRILMAZ.
+        // linkDomainSuffix `var` (configure override edebilir) → stateQueue.sync ile oku (race yok;
+        // burasi stateQueue disi calisir, deadlock olmaz).
+        let currentSuffix = stateQueue.sync { self.linkDomainSuffix }
+        guard let host = url.host?.lowercased(), host.hasSuffix(currentSuffix) else {
             stateQueue.async { self.log("Deep link had no click_id: \(url)") }
             return
         }
-        setClickId(extracted)
+        // E2: unique_key = path'in ILK segmenti; query_params ayri.
+        let uniqueKey = url.pathComponents.first { $0 != "/" && !$0.isEmpty } ?? ""
+        guard !uniqueKey.isEmpty else {
+            stateQueue.async { self.log("Link domain URL had no unique_key: \(url)") }
+            return
+        }
+        var query: [String: String] = [:]
+        if let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems {
+            for item in items where item.value != nil { query[item.name] = item.value! }
+        }
+        stateQueue.async {
+            guard self._clickId == nil else { return } // zaten click_id var → gerek yok
+            self.storage.pendingRegisterClick = ["unique_key": uniqueKey, "query_params": query]
+            self.attemptRegisterClickLocked()
+        }
+    }
+
+    /// Bekleyen register-click istegini dener (ADIM 5, E3). Basarida setClickId +
+    /// pending temizlenir; basarisizsa (ag yok / 4xx / 5xx) pending KALIR, bir sonraki
+    /// configure()/track()'te tekrar denenir. stateQueue uzerinde cagrilmali.
+    private func attemptRegisterClickLocked() {
+        guard _clickId == nil,
+              let pending = storage.pendingRegisterClick,
+              let uniqueKey = pending["unique_key"] as? String, !uniqueKey.isEmpty,
+              let companyKey = _companyKey, !companyKey.isEmpty
+        else { return }
+        let query = pending["query_params"] as? [String: String] ?? [:]
+        let referrer = pending["referrer"] as? String
+        let baseUrl = _baseUrl
+        let deviceId = storage.persistentDeviceId()
+        let client = RegisterClient(debug: _debug)
+        client.resolve(baseUrl: baseUrl, companyKey: companyKey, uniqueKey: uniqueKey,
+                       deviceId: deviceId, queryParams: query, referrer: referrer,
+                       test: _isSandbox) { [weak self] clickId in
+            guard let self = self, let clickId = clickId else { return }
+            self.stateQueue.async {
+                self.storage.pendingRegisterClick = nil // basari → temizle (E3)
+                self.setClickId(clickId)               // → flushDeferredLocked
+            }
+        }
     }
 
     /// Sets the active click id explicitly, persists it, and appends it to the
@@ -149,6 +245,10 @@ public final class AdSparkle: NSObject {
             self.storage.clickIdsTs = Date().timeIntervalSince1970
 
             self.log("click_id captured: \(trimmed)")
+
+            // #Adim3-3b: click_id (deep-link / referrer / match) geldi → bekleyen
+            // deferred olaylari gonder.
+            self.flushDeferredLocked()
         }
     }
 
@@ -190,7 +290,14 @@ public final class AdSparkle: NSObject {
             // TTL-aware chain; click_id is the most recent (last) entry.
             let chain = self.currentClickChainLocked()
             guard let clickId = chain.last, !clickId.isEmpty else {
-                self.log("No click_id available. Skipping '\(eventType)'.")
+                // ADIM 5 (E3): bekleyen register-click varsa burada tekrar dene —
+                // basarida click_id gelir ve deferred kuyruk flush olur.
+                self.attemptRegisterClickLocked()
+                // #Adim3-3b: click_id henuz yok (deep-link/referrer/match cozulmedi).
+                // Olayi DUSURME — deferred kuyruga al; click_id gelince otomatik
+                // gonderilir (auto-fire YOK, mevcut kuyruk mekanizmasi tetiklenir).
+                self.enqueueDeferredLocked(eventType: eventType, event: event, test: self._isSandbox)
+                self.log("No click_id yet — deferred '\(eventType)'.")
                 return
             }
 
@@ -287,6 +394,9 @@ public final class AdSparkle: NSObject {
         if let customParams = event.customParams, !customParams.isEmpty {
             payload["custom_params"] = customParams
         }
+        // ADIM 4: sandbox → backend postback'i yalnızca şekil-doğrular, ledger'a/DB'ye
+        // yazmaz (HMAC de bypass olur). buildPayload stateQueue'da çağrılır → güvenli.
+        if _isSandbox { payload["test"] = true }
         return payload
     }
 
@@ -307,6 +417,51 @@ public final class AdSparkle: NSObject {
                     self.enqueuePendingLocked(payload)
                 }
             }
+        }
+    }
+
+    // MARK: - Deferred events (#Adim3-3b: click_id gelene kadar bekleyenler)
+
+    /// Olayi (event_type + alanlar, click_id YOK) deferred kuyruga alir; click_id
+    /// yakalaninca `flushDeferredLocked` gonderir. `maxQueueSize` ile capli.
+    private func enqueueDeferredLocked(eventType: String, event: AdSparkleEvent, test: Bool) {
+        var fields: [String: Any] = ["event_type": eventType]
+        if let t = event.transactionId, !t.isEmpty { fields["transaction_id"] = t }
+        if let a = event.amount { fields["amount"] = a.doubleValue }
+        if let c = event.currency, !c.isEmpty { fields["currency"] = c }
+        if let p = event.productIds, !p.isEmpty { fields["product_ids"] = p }
+        if let cp = event.customParams, !cp.isEmpty { fields["custom_params"] = cp }
+        // Q2 (ADIM 4): sandbox flag'i ENQUEUE ANINDA fields'a gomulur → kalici (JSON/
+        // UserDefaults). flushDeferredLocked `fields`'i DOGRUDAN dispatch eder (buildPayload'a
+        // UGRAMAZ), yani test bayragi flush-anI state'ten DEGIL bu SAKLANAN degerden gelir →
+        // sandbox event, app-restart + env degisimi sonrasi bile sandbox kalir. NOT: eski
+        // davranista deferred flush test'i HIC eklemiyordu (buildPayload atlaniyordu) — bu onu da duzeltir.
+        if test { fields["test"] = true }
+        var q = storage.deferredEvents
+        if q.count >= AdSparkle.maxQueueSize {
+            q.removeFirst(q.count - AdSparkle.maxQueueSize + 1)
+        }
+        q.append(fields)
+        storage.deferredEvents = q
+    }
+
+    /// click_id yakalaninca bekleyen deferred olaylari click_id/user_id enjekte
+    /// edip gonderir. `stateQueue`'da cagrilmali.
+    private func flushDeferredLocked() {
+        guard let companyKey = _companyKey, !companyKey.isEmpty else { return }
+        let deferred = storage.deferredEvents
+        guard !deferred.isEmpty else { return }
+        let chain = currentClickChainLocked()
+        guard let clickId = chain.last, !clickId.isEmpty else { return } // hala yok → bekle
+        storage.deferredEvents = []
+        let userId = getOrCreateAnonIdLocked()
+        let baseUrl = _baseUrl
+        log("Flushing \(deferred.count) deferred event(s) after click_id capture.")
+        for var fields in deferred {
+            fields["click_id"] = clickId
+            if !chain.isEmpty { fields["click_ids"] = chain }
+            fields["user_id"] = userId
+            dispatch(payload: fields, baseUrl: baseUrl, companyKey: companyKey)
         }
     }
 

@@ -15,7 +15,12 @@ let package = Package(
     targets: [
         .target(
             name: "AdSparkle",
-            path: "Sources/AdSparkle"
+            path: "Sources/AdSparkle",
+            // App Store zorunlu Privacy Manifest'i kaynak jarinin/bundle'in icine
+            // kopyala (islenmeden, aynen).
+            resources: [
+                .copy("PrivacyInfo.xcprivacy")
+            ]
         )
     ]
 )
