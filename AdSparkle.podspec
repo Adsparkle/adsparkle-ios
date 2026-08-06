@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'AdSparkle'
-  s.version          = '0.1.4'
+  s.version          = '0.1.5'
   s.summary          = 'iOS client SDK for the AdSparkle affiliate attribution tracking platform.'
   s.description       = <<-DESC
 AdSparkle is the official iOS client SDK for the AdSparkle tracking platform.

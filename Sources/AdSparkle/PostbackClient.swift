@@ -57,9 +57,12 @@ final class PostbackClient {
     ) {
         log("Sending postback (attempt \(attempt)/\(maxAttempts))…")
 
-        let task = session.dataTask(with: request) { [weak self] _, response, error in
-            guard let self = self else { return }
-
+        // NOTE: `self` is captured strongly on purpose — a re-configure() replaces
+        // the SDK's client, and with [weak self] the old client would dealloc
+        // mid-flight and silently drop a retryable event (completion never fires).
+        // URLSession releases the closure once the task finishes; no lasting
+        // retain cycle is created.
+        let task = session.dataTask(with: request) { _, response, error in
             let result = self.classify(response: response, error: error)
 
             switch result {

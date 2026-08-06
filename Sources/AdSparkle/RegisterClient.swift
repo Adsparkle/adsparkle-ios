@@ -9,8 +9,22 @@ import Foundation
 /// - DETERMINISTIC: `device_id` = IDFV (/match ile AYNI deger; E5 dedup anahtari),
 ///   `platform` = "ios". Cihaz fingerprint'i (screen/scale) GONDERILMEZ → backend
 ///   hasJsFingerprint false → /match adayi olmaz.
-/// - Basari → `click_id`. 4xx/5xx/hata → `nil` (SDK sessizce gecer, E3).
+/// - Basari → `.success(click_id)`. KALICI hata (4xx, 2xx-click_id'siz) →
+///   `.permanentFailure` (pending temizlenmeli — ayni yanlis key tekrar denenmez).
+///   GECICI hata (ag / 5xx / 408 / 429) → `.transientFailure` (pending kalir, E3).
 final class RegisterClient {
+
+    /// Tek bir register-click denemesinin sonucu.
+    enum ResolveResult {
+        /// Sunucu click olusturdu; `clickId` doner.
+        case success(clickId: String)
+        /// Kalici ret (4xx — 408/429 haric — veya 2xx ama click_id yok).
+        /// Tekrar denemek sonucu degistirmez; bekleyen istek temizlenmeli.
+        case permanentFailure
+        /// Gecici hata (ag hatasi, 5xx, 408, 429). Bekleyen istek KALIR,
+        /// sonraki configure()/track()'te tekrar denenir.
+        case transientFailure
+    }
 
     private let session: URLSession
     private let debug: Bool
@@ -28,11 +42,12 @@ final class RegisterClient {
         queryParams: [String: String],
         referrer: String?,
         test: Bool = false,
-        completion: @escaping (String?) -> Void
+        completion: @escaping (ResolveResult) -> Void
     ) {
         let base = baseUrl.hasSuffix("/") ? String(baseUrl.dropLast()) : baseUrl
         guard let url = URL(string: "\(base)/api/tracking/register-click") else {
-            completion(nil)
+            // baseUrl bozuk olabilir ama sonraki configure() duzeltebilir → GECICI.
+            completion(.transientFailure)
             return
         }
 
@@ -49,7 +64,8 @@ final class RegisterClient {
         if test { body["test"] = true }
 
         guard let data = try? JSONSerialization.data(withJSONObject: body) else {
-            completion(nil)
+            // Body hicbir zaman serialize olmayacak → tekrar denemek anlamsiz, KALICI.
+            completion(.permanentFailure)
             return
         }
         var request = URLRequest(url: url)
@@ -57,24 +73,43 @@ final class RegisterClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = data
 
-        let task = session.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { completion(nil); return }
-            guard error == nil,
-                  let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-                  let data = data,
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            else {
-                // 4xx (yanlis company_key vb.) / 5xx / ag hatasi → sessizce nil (E3).
-                self.log("register-click failed or non-2xx.")
-                completion(nil)
+        // NOT: `self` GUCLU yakalanir — istemci call-site'ta lokal olarak yaratilir
+        // ([weak self] olsaydi yanit gelmeden dealloc olur, HER sonuc .transientFailure
+        // sayilirdi). Closure task bitince URLSession tarafindan birakilir; kalici
+        // retain cycle yoktur.
+        let task = session.dataTask(with: request) { data, response, error in
+            if error != nil {
+                self.log("register-click network error — will retry later.")
+                completion(.transientFailure)
                 return
             }
-            if let ok = obj["success"] as? Bool, ok,
-               let clickId = obj["click_id"] as? String, !clickId.isEmpty {
-                self.log("register-click resolved a click_id.")
-                completion(clickId)
-            } else {
-                completion(nil)
+            guard let http = response as? HTTPURLResponse else {
+                completion(.transientFailure)
+                return
+            }
+            switch http.statusCode {
+            case 200...299:
+                if let data = data,
+                   let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                   let ok = obj["success"] as? Bool, ok,
+                   let clickId = obj["click_id"] as? String, !clickId.isEmpty {
+                    self.log("register-click resolved a click_id.")
+                    completion(.success(clickId: clickId))
+                } else {
+                    // 2xx ama click_id yok (success:false vb.) → sunucu karar verdi;
+                    // ayni istegi tekrarlamak sonucu degistirmez → KALICI.
+                    self.log("register-click 2xx without click_id — permanent.")
+                    completion(.permanentFailure)
+                }
+            case 408, 429, 500...599:
+                // PostbackClient ile ayni siniflandirma: bunlar GECICI.
+                self.log("register-click transient failure (status \(http.statusCode)).")
+                completion(.transientFailure)
+            default:
+                // Diger 4xx (yanlis company_key / bilinmeyen unique_key vb.) → KALICI:
+                // pending temizlenir, sonsuz yanlis-key dongusu olmaz (E3-fix).
+                self.log("register-click permanently failed (status \(http.statusCode)).")
+                completion(.permanentFailure)
             }
         }
         task.resume()

@@ -76,6 +76,18 @@ public final class AdSparkle: NSObject {
     /// ile korunur: configure yazar, handleDeepLink `sync` okur (race yok).
     private var linkDomainSuffix = ".go.adsparkle.co"
 
+    /// Ek link host'lari (opsiyonel). Bir URL host'u bu listedeki bir degere ESIT
+    /// ise ya da ".<deger>" ile bitiyorsa link-domain sayilir (custom tracking
+    /// domain'leri icin; linkDomainSuffix ve baseUrl-host eslesmesine ektir).
+    /// Lowercase normalize edilerek saklanir; stateQueue ile korunur.
+    private var extraLinkHosts: [String] = []
+
+    /// register-click POST'u ucusta mi? handleDeepLink denemesi surerken configure()/
+    /// track() ayni pending icin IKINCI POST atmasin (cift ClickEvent riski) diye
+    /// attemptRegisterClickLocked girisinde kontrol edilir; TUM completion dallarinda
+    /// stateQueue uzerinde sifirlanir. stateQueue ile korunur.
+    private var isRegisterClickInFlight = false
+
     private var client: PostbackClient
 
     private override init() {
@@ -94,7 +106,7 @@ public final class AdSparkle: NSObject {
     /// Configures the SDK. Call once at app launch (e.g. in `application(_:didFinishLaunchingWithOptions:)`).
     ///
     /// Triggers a flush of any events that previously failed to send.
-    @objc public func configure(companyKey: String, baseUrl: String = "https://api.adsparkle.co", environment: AdSparkleEnvironment = .production, debug: Bool = false, linkDomainSuffix: String = ".go.adsparkle.co") {
+    @objc public func configure(companyKey: String, baseUrl: String = "https://api.adsparkle.co", environment: AdSparkleEnvironment = .production, debug: Bool = false, linkDomainSuffix: String = ".go.adsparkle.co", extraLinkHosts: [String] = []) {
         stateQueue.async {
             self._companyKey = companyKey
             self._baseUrl = baseUrl
@@ -104,6 +116,11 @@ public final class AdSparkle: NSObject {
             // normalize — host karsilastirmasi lowercase host uzerinde `.suffix` ile yapilir.
             let normalizedSuffix = linkDomainSuffix.lowercased()
             self.linkDomainSuffix = normalizedSuffix.hasPrefix(".") ? normalizedSuffix : "." + normalizedSuffix
+            // Ek link host'lari (custom tracking domain'ler): trim + lowercase
+            // normalize (Android ile ayni — bosluklu girdi host eslesmesini bozmasin).
+            self.extraLinkHosts = extraLinkHosts
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
             self.client = PostbackClient(debug: debug)
 
             self.storage.companyKey = companyKey
@@ -119,22 +136,40 @@ public final class AdSparkle: NSObject {
             // setClickId → bekleyen deferred olaylar gonderilir (AUTO-FIRE YOK).
             // Android'in aksine iOS'ta InstallReferrer yok; /match tek deferred yol.
             let chain = self.currentClickChainLocked()
-            if chain.last == nil && self.storage.pendingRegisterClick != nil {
+            if self.storage.pendingRegisterClick != nil {
                 // ADIM 5 (E3): bekleyen register-click varsa (deep-link deterministic)
                 // /match'ten ONCE dene — deterministic olasilik-tabanliya oncelikli.
+                // Mevcut click_id olsa bile denenir: pending = henuz kaydedilmemis
+                // YENI bir tiklama (zincir coklu click_id destekler).
                 self.attemptRegisterClickLocked()
             } else if chain.last == nil && !self.storage.matchChecked {
-                self.storage.matchChecked = true
                 let baseUrl = self._baseUrl
                 let deviceId = self.storage.persistentDeviceId()
                 let matchClient = MatchClient(debug: self._debug)
-                matchClient.resolve(baseUrl: baseUrl, deviceId: deviceId, test: self._isSandbox) { [weak self] clickId in
-                    guard let self = self, let clickId = clickId else { return }
+                matchClient.resolve(baseUrl: baseUrl, deviceId: deviceId, test: self._isSandbox) { [weak self] clickId, serverReached in
+                    guard let self = self else { return }
+                    // matchChecked YALNIZCA sunucu yanit verdiyse (2xx — matched/no_match
+                    // farketmez) yakilir; ag hatasi/5xx'te set EDILMEZ ki offline ilk
+                    // aciliste attribution kaybolmasin — sonraki configure tekrar dener.
+                    if serverReached {
+                        self.stateQueue.async { self.storage.matchChecked = true }
+                    }
+                    guard let clickId = clickId else { return }
                     // setClickId → flushDeferredLocked (bekleyen olaylar) + chain guncelle.
                     self.setClickId(clickId)
                 }
             }
         }
+    }
+
+    /// Objective-C uyumluluk overload'u: `extraLinkHosts` parametresi eklenmeden
+    /// onceki 5-parametreli selector'u AYNEN korur (mevcut ObjC cagrilari kirilmaz).
+    /// Swift'ten GORUNMEZ (obsoleted) — Swift cagrilari ana `configure`'un default
+    /// `extraLinkHosts: []` degerini kullanir.
+    @available(swift, obsoleted: 1.0)
+    @objc(configureWithCompanyKey:baseUrl:environment:debug:linkDomainSuffix:)
+    public func __configureCompat(companyKey: String, baseUrl: String, environment: AdSparkleEnvironment, debug: Bool, linkDomainSuffix: String) {
+        configure(companyKey: companyKey, baseUrl: baseUrl, environment: environment, debug: debug, linkDomainSuffix: linkDomainSuffix, extraLinkHosts: [])
     }
 
     // MARK: - Identity
@@ -164,17 +199,44 @@ public final class AdSparkle: NSObject {
             setClickId(extracted)
             return
         }
-        // ADIM 5 (E1): click_id yok VE URL bizim link domain'imizde (<slug>.go.adsparkle.co)
-        // → register-click (app YUKLU acildi, sunucuya ugramadi). Merchant deep-link'inde CAGRILMAZ.
-        // linkDomainSuffix `var` (configure override edebilir) → stateQueue.sync ile oku (race yok;
+        // ADIM 5 (E1): click_id yok VE URL bizim link domain'imizde → register-click
+        // (app YUKLU acildi, sunucuya ugramadi). Merchant deep-link'inde CAGRILMAZ.
+        // Host su UC durumdan biriyle eslesir:
+        //   (a) configure edilen linkDomainSuffix ile bitiyor (<slug>.go.adsparkle.co),
+        //   (b) configure edilen baseUrl'in host'una ESIT (custom tracking domain:
+        //       baseUrl = https://api.dirtyroulette.now, link ayni hostta),
+        //   (c) extraLinkHosts icindeki bir degere esit ya da ".<deger>" ile bitiyor.
+        // Hepsi `var` (configure override edebilir) → stateQueue.sync ile oku (race yok;
         // burasi stateQueue disi calisir, deadlock olmaz).
-        let currentSuffix = stateQueue.sync { self.linkDomainSuffix }
-        guard let host = url.host?.lowercased(), host.hasSuffix(currentSuffix) else {
+        let (currentSuffix, baseHost, extraHosts) = stateQueue.sync {
+            (self.linkDomainSuffix, URL(string: self._baseUrl)?.host?.lowercased(), self.extraLinkHosts)
+        }
+        guard let host = url.host?.lowercased() else {
             stateQueue.async { self.log("Deep link had no click_id: \(url)") }
             return
         }
-        // E2: unique_key = path'in ILK segmenti; query_params ayri.
-        let uniqueKey = url.pathComponents.first { $0 != "/" && !$0.isEmpty } ?? ""
+        let hostMatches = host.hasSuffix(currentSuffix)
+            || (baseHost != nil && host == baseHost)
+            || extraHosts.contains { host == $0 || host.hasSuffix($0.hasPrefix(".") ? $0 : "." + $0) }
+        guard hostMatches else {
+            // Eslesmeyen ama path'i segment iceren URL → hangi suffix/host beklendigini logla
+            // (custom domain'de linkDomainSuffix/extraLinkHosts unutulursa teshis kolaylassin).
+            stateQueue.async {
+                if url.pathComponents.contains(where: { $0 != "/" && !$0.isEmpty }) {
+                    let extras = extraHosts.isEmpty ? "" : ", extraLinkHosts=\(extraHosts)"
+                    self.log("Deep link host '\(host)' is not a link domain (expected suffix '\(currentSuffix)'"
+                             + (baseHost.map { " or baseUrl host '\($0)'" } ?? "") + extras
+                             + ") — register-click skipped: \(url)")
+                } else {
+                    self.log("Deep link had no click_id: \(url)")
+                }
+            }
+            return
+        }
+        // E2: unique_key = path'in SON bos-olmayan segmenti (backend /:appSlug/:uniqueKey
+        // rotasiyla ayni: key = SON segment; tek segmentli linkte ilk == son → geriye
+        // uyumlu). query_params ayri.
+        let uniqueKey = url.pathComponents.last { $0 != "/" && !$0.isEmpty } ?? ""
         guard !uniqueKey.isEmpty else {
             stateQueue.async { self.log("Link domain URL had no unique_key: \(url)") }
             return
@@ -184,18 +246,26 @@ public final class AdSparkle: NSObject {
             for item in items where item.value != nil { query[item.name] = item.value! }
         }
         stateQueue.async {
-            guard self._clickId == nil else { return } // zaten click_id var → gerek yok
+            // Yeni bir link-domain tiklamasi = YENI click: mevcut _clickId olsa bile
+            // HER ZAMAN pending yazilir ve denenir (zincir coklu click_id destekler;
+            // ayni click_id gelirse setClickId dedup'u zincirde tekrar olusturmaz).
             self.storage.pendingRegisterClick = ["unique_key": uniqueKey, "query_params": query]
             self.attemptRegisterClickLocked()
         }
     }
 
     /// Bekleyen register-click istegini dener (ADIM 5, E3). Basarida setClickId +
-    /// pending temizlenir; basarisizsa (ag yok / 4xx / 5xx) pending KALIR, bir sonraki
-    /// configure()/track()'te tekrar denenir. stateQueue uzerinde cagrilmali.
+    /// pending temizlenir. KALICI hatada (4xx, 2xx-click_id'siz) pending TEMIZLENIR —
+    /// ayni yanlis key sonsuza dek denenmez. GECICI hatada (ag / 5xx / 408 / 429)
+    /// pending KALIR, bir sonraki configure()/track()'te tekrar denenir.
+    /// Mevcut _clickId'ye BAKMAZ: pending = kaydedilmemis yeni tiklama, her zaman
+    /// denenir (zincir coklu click_id destekler). stateQueue uzerinde cagrilmali.
     private func attemptRegisterClickLocked() {
-        guard _clickId == nil,
-              let pending = storage.pendingRegisterClick,
+        // In-flight guard: POST ucustayken (handleDeepLink baslatti) configure()/track()
+        // ayni pending icin IKINCI POST atmasin — cift ClickEvent riski. Bayrak TUM
+        // completion dallarinda stateQueue uzerinde sifirlanir.
+        guard !isRegisterClickInFlight else { return }
+        guard let pending = storage.pendingRegisterClick,
               let uniqueKey = pending["unique_key"] as? String, !uniqueKey.isEmpty,
               let companyKey = _companyKey, !companyKey.isEmpty
         else { return }
@@ -204,13 +274,25 @@ public final class AdSparkle: NSObject {
         let baseUrl = _baseUrl
         let deviceId = storage.persistentDeviceId()
         let client = RegisterClient(debug: _debug)
+        isRegisterClickInFlight = true
         client.resolve(baseUrl: baseUrl, companyKey: companyKey, uniqueKey: uniqueKey,
                        deviceId: deviceId, queryParams: query, referrer: referrer,
-                       test: _isSandbox) { [weak self] clickId in
-            guard let self = self, let clickId = clickId else { return }
+                       test: _isSandbox) { [weak self] result in
+            guard let self = self else { return }
             self.stateQueue.async {
-                self.storage.pendingRegisterClick = nil // basari → temizle (E3)
-                self.setClickId(clickId)               // → flushDeferredLocked
+                self.isRegisterClickInFlight = false
+                switch result {
+                case .success(let clickId):
+                    self.storage.pendingRegisterClick = nil // basari → temizle (E3)
+                    self.setClickId(clickId)               // → flushDeferredLocked
+                case .permanentFailure:
+                    // Kalici hata (yanlis/eskimis unique_key vb.) → pending'i birak-
+                    // makta fayda yok; temizle ki sonsuz yanlis-key dongusu bitsin.
+                    self.storage.pendingRegisterClick = nil
+                    self.log("register-click permanently failed for unique_key '\(uniqueKey)' — pending cleared.")
+                case .transientFailure:
+                    break // pending kalir → sonraki configure()/track()'te tekrar denenir
+                }
             }
         }
     }
@@ -228,11 +310,12 @@ public final class AdSparkle: NSObject {
         }
 
         stateQueue.async {
+            // TTL temizligi ONCE calisir: zincir suresi dolduysa currentClickChainLocked
+            // skalar click_id'yi de siler — yeni deger ondan SONRA yazilmali, yoksa az
+            // once set edilen click_id temizlige kurban gider (sira onemli).
+            var chain = self.currentClickChainLocked()
             self._clickId = trimmed
             self.storage.clickId = trimmed
-
-            // Read the chain honouring the sliding TTL (expired → start fresh).
-            var chain = self.currentClickChainLocked()
             // Dedup, then append so the chain stays [oldest … newest].
             chain.removeAll { $0 == trimmed }
             chain.append(trimmed)
@@ -260,8 +343,11 @@ public final class AdSparkle: NSObject {
         let ts = storage.clickIdsTs
         let now = Date().timeIntervalSince1970
         if ts <= 0 || (now - ts) > AdSparkle.chainTTLSeconds {
+            // Zincirle birlikte skalar _clickId + kalici clickId da temizlenir —
+            // aksi halde suresi dolmus click restore edilip sonsuza dek yasar.
             storage.clearClickIds()
-            log("Click chain expired (>7d). Cleared.")
+            _clickId = nil
+            log("Click chain expired (>7d). Cleared (incl. scalar click_id).")
             return []
         }
         return chain
@@ -289,10 +375,13 @@ public final class AdSparkle: NSObject {
 
             // TTL-aware chain; click_id is the most recent (last) entry.
             let chain = self.currentClickChainLocked()
-            guard let clickId = chain.last, !clickId.isEmpty else {
-                // ADIM 5 (E3): bekleyen register-click varsa burada tekrar dene —
-                // basarida click_id gelir ve deferred kuyruk flush olur.
+            // ADIM 5 (E3) + sticky fix: bekleyen register-click varsa zincir DOLU olsa
+            // bile tekrar dene — gecici hatada kalmis YENI bir tiklamanin click'i
+            // kaybolmasin (basarida setClickId zinciri gunceller).
+            if self.storage.pendingRegisterClick != nil {
                 self.attemptRegisterClickLocked()
+            }
+            guard let clickId = chain.last, !clickId.isEmpty else {
                 // #Adim3-3b: click_id henuz yok (deep-link/referrer/match cozulmedi).
                 // Olayi DUSURME — deferred kuyruga al; click_id gelince otomatik
                 // gonderilir (auto-fire YOK, mevcut kuyruk mekanizmasi tetiklenir).

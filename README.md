@@ -30,7 +30,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.3")
+    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.5")
 ],
 targets: [
     .target(
@@ -47,7 +47,7 @@ targets: [
 Add to your `Podfile`:
 
 ```ruby
-pod 'AdSparkle', '~> 0.1.3'
+pod 'AdSparkle', '~> 0.1.5'
 ```
 
 Then run:
@@ -172,8 +172,32 @@ AdSparkle.shared.setClickId("a1b2c3-...")
 let current = AdSparkle.shared.clickId   // Optional<String>
 ```
 
-The SDK keeps an attribution **chain** of up to the 10 most recent, unique click
+The SDK keeps an attribution **chain** of up to the 50 most recent, unique click
 ids and sends them as `click_ids` alongside the latest `click_id`.
+
+### Link domain matching (Universal Links)
+
+When your app is already installed, a Universal Link opens the app directly and
+the URL carries no `click_id`. In that case `handleDeepLink(_:)` registers the
+click itself — but only for URLs on your tracking link domain. A URL's host is
+treated as a link domain when it:
+
+- ends with `linkDomainSuffix` (default `.go.adsparkle.co`), **or**
+- equals the host of the configured `baseUrl` (custom tracking domains — e.g.
+  `baseUrl: "https://api.yourbrand.com"` with tracking links on that same
+  host), **or**
+- equals, or is a subdomain of, an entry in `extraLinkHosts`.
+
+```swift
+AdSparkle.shared.configure(
+    companyKey: "co_your_publishable_key",
+    baseUrl: "https://api.yourbrand.com",     // links on this host match automatically
+    linkDomainSuffix: ".go.adsparkle.co",     // optional, this is the default
+    extraLinkHosts: ["links.yourbrand.com"]   // optional, additional link hosts
+)
+```
+
+URLs on any other host (your own merchant deep links) are ignored safely.
 
 ---
 

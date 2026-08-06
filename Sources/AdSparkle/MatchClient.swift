@@ -32,31 +32,43 @@ final class MatchClient {
     }
 
     /// `/match` cagrisi. `deviceId` = SDK'nin KALICI UUID'si (register-click ile AYNI;
-    /// IDFV DEGIL). Basarida `click_id`, aksi halde `nil` (no_match/ambiguous/hata).
-    func resolve(baseUrl: String, deviceId: String, test: Bool = false, completion: @escaping (String?) -> Void) {
+    /// IDFV DEGIL). Basarida `clickId` dolu doner; `serverReached` = sunucudan 2xx
+    /// yanit alindi mi (matched/no_match farketmez) — caller `matchChecked`'i YALNIZCA
+    /// serverReached=true iken yakar; ag hatasi/5xx'te sonraki configure tekrar dener.
+    func resolve(baseUrl: String, deviceId: String, test: Bool = false, completion: @escaping (_ clickId: String?, _ serverReached: Bool) -> Void) {
         guard let request = makeRequest(baseUrl: baseUrl, deviceId: deviceId, test: test) else {
             log("Failed to build /match request.")
-            completion(nil)
+            completion(nil, false)
             return
         }
-        let task = session.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { completion(nil); return }
+        // NOT: `self` GUCLU yakalanir — istemci call-site'ta lokal olarak yaratilir
+        // ([weak self] olsaydi yanit gelmeden dealloc olur, /match HER sonucta nil
+        // donerdi). Closure task bitince URLSession tarafindan birakilir; kalici
+        // retain cycle yoktur.
+        let task = session.dataTask(with: request) { data, response, error in
             guard error == nil,
-                  let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-                  let data = data,
+                  let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode)
+            else {
+                // Sunucuya ulasilamadi (ag hatasi) veya 2xx-disi → serverReached=false.
+                self.log("/match failed or non-2xx.")
+                completion(nil, false)
+                return
+            }
+            guard let data = data,
                   let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             else {
-                self.log("/match failed or non-2xx.")
-                completion(nil)
+                // 2xx ama govde cozulemedi → sunucu yanit VERDI; tekrar denemek anlamsiz.
+                self.log("/match 2xx but unparsable body.")
+                completion(nil, true)
                 return
             }
             if let ok = obj["success"] as? Bool, ok,
                let clickId = obj["click_id"] as? String, !clickId.isEmpty {
                 self.log("/match resolved a click_id.")
-                completion(clickId)
+                completion(clickId, true)
             } else {
                 self.log("/match no click_id (reason: \(obj["reason"] ?? "unknown")).")
-                completion(nil)
+                completion(nil, true)
             }
         }
         task.resume()

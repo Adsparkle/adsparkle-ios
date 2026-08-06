@@ -81,10 +81,13 @@ final class Storage {
         set { defaults.set(newValue, forKey: Key.clickIdsTs) }
     }
 
-    /// Clears the click chain and its timestamp (used on TTL expiry).
+    /// Clears the click chain, its timestamp, and the persisted scalar click id
+    /// (used on TTL expiry — an expired chain must not leave a stale `clickId`
+    /// behind to be restored on the next launch).
     func clearClickIds() {
         defaults.removeObject(forKey: Key.clickIds)
         defaults.removeObject(forKey: Key.clickIdsTs)
+        defaults.removeObject(forKey: Key.clickId)
     }
 
     // MARK: - Pending queue (events that failed to send)
@@ -126,8 +129,9 @@ final class Storage {
     // MARK: - Pending register-click (ADIM 5)
 
     /// Universal Link ile app acilinca yakalanan bekleyen register-click istegi:
-    /// { unique_key, query_params, referrer? }. Basarili olana kadar SAKLANIR;
-    /// configure()/track()'te tekrar denenir (E3). Basarida temizlenir.
+    /// { unique_key, query_params, referrer? }. GECICI hatalarda SAKLANIR;
+    /// configure()/track()'te tekrar denenir (E3). Basarida VE kalici (4xx)
+    /// hatada temizlenir (yanlis key sonsuza dek denenmez).
     var pendingRegisterClick: [String: Any]? {
         get {
             guard let data = defaults.data(forKey: Key.pendingRegisterClick) else { return nil }

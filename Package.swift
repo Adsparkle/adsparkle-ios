@@ -21,6 +21,13 @@ let package = Package(
             resources: [
                 .copy("PrivacyInfo.xcprivacy")
             ]
+        ),
+        // Test target — yayin artefaktina girmez. Testler gercek bir localhost
+        // HTTP sunucusuna karsi URLSession'in TAM yolunu kosar (mock URLProtocol yok).
+        .testTarget(
+            name: "AdSparkleTests",
+            dependencies: ["AdSparkle"],
+            path: "Tests/AdSparkleTests"
         )
     ]
 )
