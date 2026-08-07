@@ -30,7 +30,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.5")
+    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.6")
 ],
 targets: [
     .target(
@@ -47,7 +47,7 @@ targets: [
 Add to your `Podfile`:
 
 ```ruby
-pod 'AdSparkle', '~> 0.1.5'
+pod 'AdSparkle', '~> 0.1.6'
 ```
 
 Then run:
@@ -198,6 +198,29 @@ AdSparkle.shared.configure(
 ```
 
 URLs on any other host (your own merchant deep links) are ignored safely.
+
+---
+
+## Attribution callback
+
+To be notified the moment a `click_id` becomes active — whatever its source
+(a direct `?click_id` in a URL, a register-click on a Universal Link, or a
+deferred `/match` resolution) — set the optional `onClickId` handler:
+
+```swift
+AdSparkle.shared.onClickId = { clickId in
+    print("Attributed: \(clickId)")
+}
+```
+
+- If a `click_id` already exists when you set the handler, it is called
+  immediately once with that value — so a handler registered "late" (after a
+  cold-start attribution already resolved) never misses the moment.
+- The same value never fires twice in a row; a different new value fires again.
+- The handler is always called on the main queue.
+
+Polling `AdSparkle.shared.clickId` remains a valid alternative if you prefer
+pull-style access.
 
 ---
 

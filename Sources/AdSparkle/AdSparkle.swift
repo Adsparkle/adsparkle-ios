@@ -68,6 +68,15 @@ public final class AdSparkle: NSObject {
     /// ADIM 4: sandbox modu mu? true ise tüm giden body'lere `test: true` eklenir.
     private var _isSandbox: Bool = false
 
+    /// Attribution callback (opsiyonel): yeni bir click_id aktif oldugunda cagrilir.
+    /// stateQueue ile korunur; teslim HER ZAMAN main queue'da, kilit DISINDA yapilir.
+    private var _onClickId: ((String) -> Void)?
+
+    /// Callback'e en son teslim edilen deger: ayni deger pes pese TEKRAR tetiklemez;
+    /// farkli yeni deger tetikler. Handler her set edilisinde sifirlanir/guncellenir
+    /// (dedup handler-kaydi basina gecerlidir). stateQueue ile korunur.
+    private var _lastDeliveredClickId: String?
+
     /// ADIM 5: Universal Link kok domain'i (<slug>.go.adsparkle.co). handleDeepLink
     /// yalnizca bu suffix'li URL'lerde register-click cagirir; merchant'in kendi
     /// deep-link'lerinde (nudestudio.com/...) DEGIL. Varsayilan prod domaini;
@@ -188,6 +197,54 @@ public final class AdSparkle: NSObject {
     /// Current (most recent) click id, if any.
     @objc public var clickId: String? {
         stateQueue.sync { _clickId }
+    }
+
+    /// Attribution callback (Adjust attribution-callback paritesi): yeni bir
+    /// click_id AKTIF oldugunda cagrilir — kaynagi fark etmez (URL'deki dogrudan
+    /// `?click_id`, register-click basarisi, `/match` basarisi).
+    ///
+    /// - Handler set edildiginde halihazirda bir click_id VARSA, handler ayni
+    ///   degerle HEMEN bir kez cagrilir (soguk baslangicta "handler gec kayit
+    ///   oldu, ani kacirdi" yarisini kapatir).
+    /// - Ayni deger pes pese tekrar tetiklemez; FARKLI yeni deger tekrar tetikler.
+    /// - Teslim her zaman main queue'da, SDK state kilidi DISINDA yapilir.
+    /// - Opsiyoneldir: set edilmemisse SDK davranisi birebir aynidir. `nil`
+    ///   atamak handler'i kaldirir.
+    ///
+    /// ```swift
+    /// AdSparkle.shared.onClickId = { cid in print("attributed: \(cid)") }
+    /// ```
+    @objc public var onClickId: ((String) -> Void)? {
+        get { stateQueue.sync { _onClickId } }
+        set {
+            stateQueue.async {
+                self._onClickId = newValue
+                guard let handler = newValue else {
+                    self._lastDeliveredClickId = nil
+                    return
+                }
+                // S2 hemen-cagri: mevcut (TTL-aware) click_id varsa ayni degerle
+                // hemen BIR KEZ teslim et. TTL suepuermesi once calisir — suresi
+                // dolmus click ile cagrilmasin.
+                _ = self.currentClickChainLocked()
+                guard let current = self._clickId, !current.isEmpty else {
+                    self._lastDeliveredClickId = nil
+                    return
+                }
+                self._lastDeliveredClickId = current
+                DispatchQueue.main.async { handler(current) }
+            }
+        }
+    }
+
+    /// Yeni aktiflesen click_id'yi `onClickId` handler'ina teslim eder: ayni deger
+    /// dedup'lanir (S3), teslim main queue'da ve kilit DISINDA yapilir (S4 —
+    /// kullanici kodu stateQueue icinde CALISTIRILMAZ). `stateQueue` uzerinde cagrilmali.
+    private func notifyOnClickIdLocked(_ clickId: String) {
+        guard let handler = _onClickId else { return }
+        guard clickId != _lastDeliveredClickId else { return }
+        _lastDeliveredClickId = clickId
+        DispatchQueue.main.async { handler(clickId) }
     }
 
     /// Extracts a `click_id` from a deep link / universal link URL, persists it,
@@ -329,6 +386,10 @@ public final class AdSparkle: NSObject {
 
             self.log("click_id captured: \(trimmed)")
 
+            // Attribution callback: setClickId TUM kaynaklarin ortak hunisidir
+            // (deep-link ?click_id / register-click / match) → tek noktadan bildir.
+            self.notifyOnClickIdLocked(trimmed)
+
             // #Adim3-3b: click_id (deep-link / referrer / match) geldi → bekleyen
             // deferred olaylari gonder.
             self.flushDeferredLocked()
@@ -347,6 +408,10 @@ public final class AdSparkle: NSObject {
             // aksi halde suresi dolmus click restore edilip sonsuza dek yasar.
             storage.clearClickIds()
             _clickId = nil
+            // S3 nuansi (RN/Flutter paritesi): zincir temizlendi — daha once teslim
+            // edilen deger artik AKTIF degil. Ayni click_id ileride YENIDEN aktif
+            // olursa bu yeni bir aktivasyondur, onClickId tekrar tetiklenmeli.
+            _lastDeliveredClickId = nil
             log("Click chain expired (>7d). Cleared (incl. scalar click_id).")
             return []
         }
