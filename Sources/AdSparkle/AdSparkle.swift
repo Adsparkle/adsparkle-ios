@@ -45,6 +45,10 @@ public final class AdSparkle: NSObject {
     @objc public static let shared = AdSparkle()
 
     /// Maximum number of click ids retained in the attribution chain.
+    /// SDK surumu — debug ekran tanilarinda gosterilir ki sahada hangi surumun
+    /// calistigi tek bakista gorunsun (podspec/tag ile ELLE senkron tutulur).
+    @objc public static let sdkVersion = "0.1.7"
+
     private static let maxClickIds = 50
 
     /// Maximum number of events retained in the offline pending queue.
@@ -137,6 +141,12 @@ public final class AdSparkle: NSObject {
             self.storage.isSandbox = self._isSandbox
 
             self.log("Configured. baseUrl=\(baseUrl) env=\(environment == .sandbox ? "sandbox" : "production")")
+            // D4-1: kurulum tamam — ekranda hangi backend'e ve hangi link sonekine
+            // bagli oldugunu goster (companyKey GOSTERILMEZ).
+            // Host cozulemezse "?" basilir (Android ile ayni): ham baseUrl'i basmak
+            // yaniltici olurdu — ornegin sema unutulmus "api.adsparkle.co" dogru
+            // gorunur ama host'u nil'dir, yani baseUrl-host link eslesmesi CALISMAZ.
+            self.screen("AdSparkle \(AdSparkle.sdkVersion) hazir | baseUrl=\(URL(string: baseUrl)?.host ?? "?") | suffix=\(self.linkDomainSuffix)")
             self.flushPendingLocked()
 
             // #Adim3: iOS deferred attribution. click_id YOKSA (deep-link gelmedi →
@@ -163,7 +173,13 @@ public final class AdSparkle: NSObject {
                     if serverReached {
                         self.stateQueue.async { self.storage.matchChecked = true }
                     }
-                    guard let clickId = clickId else { return }
+                    // D4-9: /match sonucu ekranda (completion arka planda calisir →
+                    // mesaj sirasi bozulmasin diye stateQueue uzerinden).
+                    guard let clickId = clickId else {
+                        self.stateQueue.async { self.screen("Eslestirme sonucu yok (no_match)") }
+                        return
+                    }
+                    self.stateQueue.async { self.screen("Eslestirme: click_id alindi \(AdSparkle.short(clickId))") }
                     // setClickId → flushDeferredLocked (bekleyen olaylar) + chain guncelle.
                     self.setClickId(clickId)
                 }
@@ -252,7 +268,12 @@ public final class AdSparkle: NSObject {
     ///
     /// Safe to call for any incoming URL; URLs without a `click_id` are ignored.
     @objc public func handleDeepLink(_ url: URL) {
+        // D4-2: linkin geldigi AN. `_debug` stateQueue'da okunur; mesaj da oradan
+        // gonderilir → sonraki tani mesajlariyla sira korunur (serial queue, FIFO).
+        stateQueue.async { self.screen("Link geldi: \(AdSparkle.clip(url.absoluteString))") }
         if let extracted = DeepLink.clickId(from: url) {
+            // D4-3: URL zaten click_id tasiyor (kayit gerekmez).
+            stateQueue.async { self.screen("click_id linkten alindi: \(AdSparkle.short(extracted))") }
             setClickId(extracted)
             return
         }
@@ -279,6 +300,8 @@ public final class AdSparkle: NSObject {
             // Eslesmeyen ama path'i segment iceren URL → hangi suffix/host beklendigini logla
             // (custom domain'de linkDomainSuffix/extraLinkHosts unutulursa teshis kolaylassin).
             stateQueue.async {
+                // D4-4: en sik entegrasyon hatasi — link domaini SDK'ya tanitilmamis.
+                self.screen("Link taninmadi! host=\(host) beklenen sonek=\(currentSuffix) veya baseUrl host=\(baseHost ?? "?")")
                 if url.pathComponents.contains(where: { $0 != "/" && !$0.isEmpty }) {
                     let extras = extraHosts.isEmpty ? "" : ", extraLinkHosts=\(extraHosts)"
                     self.log("Deep link host '\(host)' is not a link domain (expected suffix '\(currentSuffix)'"
@@ -332,6 +355,8 @@ public final class AdSparkle: NSObject {
         let deviceId = storage.persistentDeviceId()
         let client = RegisterClient(debug: _debug)
         isRegisterClickInFlight = true
+        // D4-5: host eslesti, tiklama sunucuya kaydediliyor.
+        screen("Tiklama kaydediliyor: key=\(AdSparkle.clip(uniqueKey))")
         client.resolve(baseUrl: baseUrl, companyKey: companyKey, uniqueKey: uniqueKey,
                        deviceId: deviceId, queryParams: query, referrer: referrer,
                        test: _isSandbox) { [weak self] result in
@@ -341,14 +366,17 @@ public final class AdSparkle: NSObject {
                 switch result {
                 case .success(let clickId):
                     self.storage.pendingRegisterClick = nil // basari → temizle (E3)
+                    self.screen("click_id alindi: \(AdSparkle.short(clickId))") // D4-6
                     self.setClickId(clickId)               // → flushDeferredLocked
                 case .permanentFailure:
                     // Kalici hata (yanlis/eskimis unique_key vb.) → pending'i birak-
                     // makta fayda yok; temizle ki sonsuz yanlis-key dongusu bitsin.
                     self.storage.pendingRegisterClick = nil
                     self.log("register-click permanently failed for unique_key '\(uniqueKey)' — pending cleared.")
+                    self.screen("Tiklama kaydi REDDEDILDI (kalici) — key/anahtar yanlis olabilir") // D4-7
                 case .transientFailure:
-                    break // pending kalir → sonraki configure()/track()'te tekrar denenir
+                    // D4-8: pending kalir → sonraki configure()/track()'te tekrar denenir
+                    self.screen("Tiklama kaydi gonderilemedi (agi kontrol et), tekrar denenecek")
                 }
             }
         }
@@ -452,6 +480,7 @@ public final class AdSparkle: NSObject {
                 // gonderilir (auto-fire YOK, mevcut kuyruk mekanizmasi tetiklenir).
                 self.enqueueDeferredLocked(eventType: eventType, event: event, test: self._isSandbox)
                 self.log("No click_id yet — deferred '\(eventType)'.")
+                self.screen("\(eventType) bekletildi (click_id yok)") // D4-10
                 return
             }
 
@@ -560,12 +589,16 @@ public final class AdSparkle: NSObject {
     /// Must be called on `stateQueue`.
     private func dispatch(payload: [String: Any], baseUrl: String, companyKey: String) {
         let client = self.client
+        // D4-11/12: ekran tanilari icin olay adi (payload'dan; PII icermez).
+        let eventType = (payload["event_type"] as? String) ?? "event"
         // Networking happens off the state queue (URLSession is async anyway).
         client.send(payload: payload, baseUrl: baseUrl, companyKey: companyKey) { [weak self] result in
             guard let self = self else { return }
             switch result {
-            case .success, .permanentFailure:
-                break
+            case .success:
+                self.stateQueue.async { self.screen("\(eventType) gonderildi ✓") }
+            case .permanentFailure(let statusCode):
+                self.stateQueue.async { self.screen("\(eventType) REDDEDILDI (\(statusCode))") }
             case .retryableFailure:
                 self.stateQueue.async {
                     self.enqueuePendingLocked(payload)
@@ -666,5 +699,27 @@ public final class AdSparkle: NSObject {
     private func log(_ message: String) {
         guard _debug else { return }
         print("[AdSparkle] \(message)")
+    }
+
+    // MARK: - Debug ekran tanilari (D1-D6)
+
+    /// Tani mesajini CIHAZ EKRANINDA gosterir (Xcode'a bagli olmayan gercek-cihaz
+    /// testleri icin). TEK gecit: `_debug` kontrolu EN DISTA burada yapilir →
+    /// `debug=false` iken `DebugOverlay`'e hic dokunulmaz, pencere/gorunum
+    /// YARATILMAZ (uretimde sifir etki). `stateQueue` uzerinde cagrilmali (`_debug` okur).
+    private func screen(_ message: String) {
+        guard _debug else { return }
+        DebugOverlay.show(message)
+    }
+
+    /// D5: kimlik degerleri ekranda ASLA tam gosterilmez — yalnizca ilk 8 karakter
+    /// (click_id icin teshise yeter). companyKey / secret / device_id hic gosterilmez.
+    private static func short(_ value: String) -> String {
+        value.count <= 8 ? value : String(value.prefix(8))
+    }
+
+    /// Uzun metinleri (ozellikle URL) ekran icin kirpar.
+    private static func clip(_ value: String, _ maxLength: Int = 60) -> String {
+        value.count <= maxLength ? value : String(value.prefix(maxLength)) + "…"
     }
 }

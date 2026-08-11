@@ -30,7 +30,7 @@ Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.6")
+    .package(url: "https://github.com/Adsparkle/adsparkle-ios.git", from: "0.1.7")
 ],
 targets: [
     .target(
@@ -47,7 +47,7 @@ targets: [
 Add to your `Podfile`:
 
 ```ruby
-pod 'AdSparkle', '~> 0.1.6'
+pod 'AdSparkle', '~> 0.1.7'
 ```
 
 Then run:
@@ -305,6 +305,43 @@ type, built-in or custom.
 State (company key, base URL, user id, click ids, pending queue) is persisted in
 `UserDefaults` under the `co.adsparkle.sdk` suite, so attribution survives app
 restarts.
+
+---
+
+## Debug ekran tanilari (on-screen diagnostics)
+
+When you test on a real device you are usually **not** attached to Xcode, so the
+`print` diagnostics are invisible. With `debug: true` the SDK also shows the same
+key steps **on the device screen** as small toast messages (up to 5 at a time,
+each disappearing after ~6 seconds):
+
+```swift
+AdSparkle.shared.configure(
+    companyKey: "co_your_publishable_key",
+    debug: true          // on-screen diagnostics ON
+)
+```
+
+Typical sequence when a tracking link opens the app:
+
+```
+AdSparkle hazir | baseUrl=api.adsparkle.co | suffix=.go.adsparkle.co
+Link geldi: https://acme.go.adsparkle.co/abc123
+Tiklama kaydediliyor: key=abc123
+click_id alindi: 8f3c1a2b
+purchase gonderildi ✓
+```
+
+Messages also cover the failure cases you need to see: an unrecognized link host
+(`Link taninmadi! …` — the link domain is not known to the SDK), a rejected or
+undelivered click registration, `/match` returning no result, and an event held
+back because no `click_id` exists yet.
+
+- The overlay is **never** interactive — touches pass straight through to your UI.
+- No sensitive data is shown: the company key, device id and full click ids are
+  never displayed (a click id is truncated to its first 8 characters).
+- With `debug: false` (the default, i.e. production) **no overlay code runs at
+  all** — no window and no view is ever created.
 
 ---
 
